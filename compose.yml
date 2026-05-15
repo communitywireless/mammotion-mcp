@@ -1,0 +1,30 @@
+services:
+  mammotion-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mammotion-mcp:latest
+    container_name: mammotion-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    # MCP servers run via stdio — no published ports.
+    # The MCP client (mycroft-sandbox / mycroft-desktop / CM) attaches via
+    # `docker exec -i mammotion-mcp python -m mammotion_mcp.server` or
+    # directly via `command: ["docker", "exec", "-i", "mammotion-mcp", ...]`
+    # in the consumer's .mcp.json.
+    stdin_open: true
+    tty: false
+    # Centralized log forwarding per git-deployment-doctrine.md req #5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Persist concurrent-call lock to host so a container restart doesn't
+    # release a lock another instance is holding (edge case but cheap to guard)
+    volumes:
+      - mcp-state:/var/lib/mammotion-mcp
+
+volumes:
+  mcp-state:

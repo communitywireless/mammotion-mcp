@@ -1,0 +1,144 @@
+{
+  "_comment": "Canonical lookup: Joshua's Mammotion-app area names \u00e2\u2020\u2019 HA hash. HA's auto-generated friendly_names ('Area 1'-'Area 8') do NOT match Joshua's app names. Use the 'by_app_name' map below when issuing mammotion.start_mow.",
+  "_authoritative_as_of": "2026-05-12T23:10:00-10:00",
+  "_authoritative_source": "Joshua Montgomery visual identification via Google Earth (c:/temp/zones.kml)",
+  "device": "lawn_mower.luba2_awd_1",
+  "device_iot_id": "FLWTswi07bN5JipPDSVU000000",
+  "by_app_name": {
+    "Area 1": {
+      "hash": "3291496386505131361",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 3",
+      "ha_switch_entity": "switch.luba2_awd_1_area_3291496386505131361",
+      "geojson_zone": "Zone 3",
+      "centroid_lat_lon": [
+        19.6583516,
+        -155.9511445
+      ]
+    },
+    "Area 2": {
+      "hash": "6657921897094236726",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 5",
+      "ha_switch_entity": "switch.luba2_awd_1_area_6657921897094236726",
+      "geojson_zone": "Zone 5",
+      "centroid_lat_lon": [
+        19.6578837,
+        -155.9506075
+      ]
+    },
+    "Area 3": {
+      "hash": "8192554981090020571",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 8",
+      "ha_switch_entity": "switch.luba2_awd_1_area_area_10",
+      "geojson_zone": "Zone 8",
+      "centroid_lat_lon": [
+        19.6574376,
+        -155.9503919
+      ]
+    },
+    "Area 4": {
+      "hash": "197980587494760073",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 1",
+      "ha_switch_entity": "switch.luba2_awd_1_area_197980587494760073",
+      "geojson_zone": "Zone 1",
+      "centroid_lat_lon": [
+        19.6580264,
+        -155.9505611
+      ]
+    },
+    "Area 5": {
+      "hash": "770603965010184215",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 2",
+      "ha_switch_entity": "switch.luba2_awd_1_area_area_9",
+      "geojson_zone": "Zone 2",
+      "centroid_lat_lon": [
+        19.6577389,
+        -155.95043
+      ]
+    },
+    "Area 6": {
+      "hash": "3439157731089703234",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 4",
+      "ha_switch_entity": "switch.luba2_awd_1_area_3439157731089703234",
+      "geojson_zone": "Zone 4",
+      "centroid_lat_lon": [
+        19.6583979,
+        -155.9510545
+      ]
+    },
+    "Area 7": {
+      "hash": "7577155646916836452",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 6",
+      "ha_switch_entity": "switch.luba2_awd_1_area_area_7",
+      "geojson_zone": "Zone 6",
+      "centroid_lat_lon": [
+        19.6578922,
+        -155.9511447
+      ]
+    },
+    "Area 8": {
+      "hash": "8173678944016882868",
+      "ha_friendly_name": "Luba2-AWD-1 Area Area 7",
+      "ha_switch_entity": "switch.luba2_awd_1_area_area_9_2",
+      "geojson_zone": "Zone 7",
+      "centroid_lat_lon": [
+        19.6579327,
+        -155.9512784
+      ]
+    }
+  },
+  "by_hash": {
+    "197980587494760073": "Area 4",
+    "770603965010184215": "Area 5",
+    "3291496386505131361": "Area 1",
+    "3439157731089703234": "Area 6",
+    "6657921897094236726": "Area 2",
+    "7577155646916836452": "Area 7",
+    "8173678944016882868": "Area 8",
+    "8192554981090020571": "Area 3"
+  },
+  "service_call_template": {
+    "_comment": "mammotion.start_mow expects the entity_id form of the area switch in the 'areas' list (e.g. 'switch.luba2_awd_1_area_3291496386505131361' or HA-generated short forms like 'switch.luba2_awd_1_area_area_10'). The raw hash form returns HTTP 400. Use by_app_name[X].ha_switch_entity, NOT by_app_name[X].hash. Confirmed 2026-05-13 by mycroft-container cross-validation.",
+    "domain": "mammotion",
+    "service": "start_mow",
+    "target": {
+      "entity_id": "lawn_mower.luba2_awd_1"
+    },
+    "service_data_example": {
+      "areas": [
+        "<entity_id from by_app_name.ha_switch_entity>"
+      ]
+    }
+  },
+  "operational_notes": {
+    "cancel_command": {
+      "domain": "mammotion",
+      "service": "cancel_job",
+      "target": {
+        "entity_id": "lawn_mower.luba2_awd_1"
+      }
+    },
+    "recall_command": {
+      "domain": "lawn_mower",
+      "service": "dock",
+      "target": {
+        "entity_id": "lawn_mower.luba2_awd_1"
+      }
+    },
+    "warning": "Always issue cancel_job AFTER lawn_mower.dock \u00e2\u20ac\u201d recall sends mower home but leaves job in 'paused' state. cancel_job transitions mower to MODE_READY + docked."
+  },
+  "drift_detection": {
+    "_why": "Mammotion area hashes are content-derived from polygon vertices. Border-edit (for growth/erosion/landscape change) \u2192 new hash. This mapping WILL go stale when Joshua adjusts borders.",
+    "_detection": "Before issuing area-targeted command, pull current GeoJSON via mammotion.get_geojson. For each by_app_name entry, verify the stored hash still appears in the GeoJSON. If any hash missing \u2192 drift detected.",
+    "_recovery_strategy": [
+      "1. Pull fresh GeoJSON via HA service mammotion.get_geojson(entity_id=lawn_mower.luba2_awd_1).",
+      "2. For each area in by_app_name, look up stored centroid_lat_lon.",
+      "3. For each polygon in fresh GeoJSON, compute its centroid.",
+      "4. Match by closest centroid (haversine or simple lat/lon distance) within ~20m tolerance.",
+      "5. If unambiguous match found, update by_app_name[X].hash + by_hash + centroid_lat_lon in this file + commit + push.",
+      "6. If ambiguous OR no match within tolerance, ASK Joshua to re-identify via regenerated KML."
+    ],
+    "_kml_regeneration_command": "See ~/projects/mower-recovery-pm/scripts/regenerate-mapping-kml.sh (TODO) OR re-run the get_geojson-to-KML python flow used 2026-05-12.",
+    "_owning_agent": "mower-recovery-pm OR successor",
+    "_check_cadence_recommendation": "Before every area-targeted command (cheap \u2014 one HA service call + dict lookup) OR daily cron + Redis alert on drift."
+  }
+}
