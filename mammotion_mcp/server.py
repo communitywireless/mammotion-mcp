@@ -62,14 +62,21 @@ def build_server() -> FastMCP:
     )
 
     # Tool registration (Driver implements each tools/*.py module)
-    from mammotion_mcp.tools import mow, status
+    from mammotion_mcp.tools import motion, mow, status
 
     mow.register(server, ha_client=ha_client, safety=safety)
     status.register(server, ha_client=ha_client)
 
-    if os.environ.get("ENABLE_DIAGNOSTIC_TOOLS", "false").lower() == "true":
-        from mammotion_mcp.tools import diag, motion
-        motion.register(server, ha_client=ha_client, safety=safety)
+    enable_diag = os.environ.get("ENABLE_DIAGNOSTIC_TOOLS", "false").lower() == "true"
+    motion.register(
+        server,
+        ha_client=ha_client,
+        safety=safety,
+        enable_diagnostic_tools=enable_diag,
+    )
+
+    if enable_diag:
+        from mammotion_mcp.tools import diag
         diag.register(server, ha_client=ha_client)
 
     LOGGER.info("mammotion-mcp server constructed (HA=%s)", ha_client.url)
