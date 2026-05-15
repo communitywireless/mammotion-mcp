@@ -35,6 +35,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["mammotion_mcp"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"mammotion_mcp/data/area-mapping.json" = "mammotion_mcp/data/area-mapping.json"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

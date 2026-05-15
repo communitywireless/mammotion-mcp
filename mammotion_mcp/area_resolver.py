@@ -1,14 +1,18 @@
 """Area-name → HA switch entity resolver.
 
-Reads ``data/area-mapping.json`` (baked into the container image at
-``/app/data/area-mapping.json``) and resolves Joshua's app-side area names
-("Area 6") to the canonical HA switch entity IDs that
-``mammotion.start_mow`` expects in its ``areas`` list.
+Reads ``mammotion_mcp/data/area-mapping.json`` (bundled as package data, loaded
+via ``importlib.resources``) and resolves Joshua's app-side area names ("Area 6")
+to the canonical HA switch entity IDs that ``mammotion.start_mow`` expects in
+its ``areas`` list.
 
 This module exists because HA's auto-generated friendly_names DO NOT match
 the names Joshua sees in the Mammotion app. Agents that hard-coded entity
 IDs from the HA dashboard got the wrong areas. The mapping JSON is the
 single source of truth.
+
+The ``mapping_path`` parameter accepts either a string path (env-override for
+custom deployments) or ``None`` (loads the bundled package default). Setting
+``AREA_MAPPING_PATH`` in the environment overrides the bundled default.
 
 See ``rules/no-forward-todos.md``: drift detection is captured in the
 mapping JSON's ``drift_detection`` block + tracked by mower-recovery-pm.
@@ -25,35 +29,48 @@ LOGGER = logging.getLogger("mammotion_mcp.area_resolver")
 
 
 @lru_cache(maxsize=4)
-def _load_mapping(mapping_path: str) -> dict:
-    """Load area-mapping.json from disk. Cached by path.
+def _load_mapping(mapping_path: str | None) -> dict:
+    """Load area-mapping.json. Cached by path.
 
     Args:
-        mapping_path: Absolute path to the area-mapping.json file.
+        mapping_path: Absolute path to the area-mapping.json file, or None
+                      to load the package-bundled default (the canonical
+                      mapping shipped inside mammotion_mcp/data/). This works
+                      for uvx-installed wheels, editable installs, and Docker
+                      layouts identically.
 
     Returns:
         Parsed JSON dict.
 
     Raises:
-        FileNotFoundError: if the mapping file is missing.
+        FileNotFoundError: if the explicit path is given but the file is missing.
         json.JSONDecodeError: if the file is corrupt.
     """
+    if mapping_path is None:
+        # Load from package resources (works for uvx-installed wheels +
+        # editable installs + Docker COPY-into-package layouts identically).
+        from importlib.resources import files
+
+        resource = files("mammotion_mcp").joinpath("data/area-mapping.json")
+        return json.loads(resource.read_text())
+
     path = Path(mapping_path)
     if not path.exists():
         raise FileNotFoundError(
             f"Area mapping not found at {mapping_path}. "
-            f"Ensure the file is mounted into the container."
+            f"Set AREA_MAPPING_PATH=<path> OR unset to use the package default."
         )
     with path.open() as f:
         return json.load(f)
 
 
-def resolve(area_name: str, mapping_path: str) -> str:
+def resolve(area_name: str, mapping_path: str | None) -> str:
     """Return the HA switch entity ID for the named area.
 
     Args:
         area_name: Joshua-app-side area name (e.g. "Area 6").
-        mapping_path: Absolute path to area-mapping.json.
+        mapping_path: Absolute path to area-mapping.json, or None to use the
+                      package-bundled default.
 
     Returns:
         HA switch entity ID (e.g. "switch.luba2_awd_1_area_3439157731089703234").
@@ -79,11 +96,12 @@ def resolve(area_name: str, mapping_path: str) -> str:
     return switch_entity
 
 
-def list_areas(mapping_path: str) -> list[dict[str, str]]:
+def list_areas(mapping_path: str | None) -> list[dict[str, str]]:
     """Return all areas as a list of dicts.
 
     Args:
-        mapping_path: Absolute path to area-mapping.json.
+        mapping_path: Absolute path to area-mapping.json, or None to use the
+                      package-bundled default.
 
     Returns:
         List of ``{app_name, hash, ha_switch_entity}`` dicts, one per area.

@@ -17,7 +17,7 @@ from mammotion_mcp.ha_client import HAClient, MowerStatus
 from mammotion_mcp.safety import HST, SafetyGate, SafetyViolation
 from mammotion_mcp.tools import mow as mow_module
 
-DATA_PATH = str(Path(__file__).parent.parent / "data" / "area-mapping.json")
+DATA_PATH = str(Path(__file__).parent.parent / "mammotion_mcp" / "data" / "area-mapping.json")
 
 
 class _MockHAClient:

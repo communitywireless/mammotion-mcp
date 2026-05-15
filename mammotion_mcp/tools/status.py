@@ -28,9 +28,7 @@ LOGGER = logging.getLogger("mammotion_mcp.tools.status")
 def register(server: FastMCP, *, ha_client: HAClient) -> None:
     """Register Tier-2 status tools."""
 
-    mapping_path = os.environ.get(
-        "AREA_MAPPING_PATH", "/app/data/area-mapping.json"
-    )
+    mapping_path = os.environ.get("AREA_MAPPING_PATH")  # None → package default
 
     @server.tool()
     async def get_mower_status() -> dict[str, Any]:

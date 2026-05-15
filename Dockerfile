@@ -14,10 +14,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY mammotion_mcp ./mammotion_mcp
 RUN pip install --no-cache-dir -e .
-
-# Application data (kept as a separate layer so updating area-mapping.json
-# doesn't invalidate the pip-install layer).
-COPY data ./data
+# area-mapping.json is now inside mammotion_mcp/data/ (package data).
+# No separate COPY needed — pip install -e . makes it available via
+# importlib.resources at mammotion_mcp/data/area-mapping.json.
 
 # MCP servers run via stdio — no port exposure needed.
 # The container is invoked with stdio attached by the consumer agent's MCP client.

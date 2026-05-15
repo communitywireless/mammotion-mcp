@@ -99,9 +99,7 @@ async def _poll_charging(
 def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> None:
     """Register Tier-1 mow tools on the FastMCP server."""
 
-    mapping_path = os.environ.get(
-        "AREA_MAPPING_PATH", "/app/data/area-mapping.json"
-    )
+    mapping_path = os.environ.get("AREA_MAPPING_PATH")  # None → package default
 
     @server.tool()
     async def mow_area(
