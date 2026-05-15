@@ -2,9 +2,75 @@
 
 MCP server exposing canonical Mammotion Luba2-AWD mower control to Guard Well Farm agents.
 
-**Status:** v0 scaffold (2026-05-14) — pending Investigator-led pymammotion surface lock, then Driver-built v1 tools.
+**Status:** v1.1 (2026-05-15) — in-tool verification phase added (W-003 fix).
 **Deployment tier (initial):** mycroft-sandbox on Thor2 (per `rules/sandbox-first.md`).
 **Owner:** mower-recovery-pm (transient) → folds into mycroft-desktop on close.
+
+## What `success` means (v1.1 W-003 fix)
+
+`mow_area` semantics changed in v1.1 to fix a W-003 ("test the faucet,
+not the plumbing") violation that bit us 2026-05-15 09:25 HST.
+
+### v1.0 behavior (the bug)
+
+`mow_area` returned `result="mow_complete"` after the canonical 5-step
+HA-service-call sequence (cancel + start_stop_blades + start_mow + dock +
+post-dock cancel) completed 200 OK and the mower's `state` briefly
+transitioned to `mowing` within 60s.
+
+What actually happened on 2026-05-15 09:25 HST: state held `mowing` for
+exactly **24 seconds** then went to `paused`. `work_area` never reached
+the target area's hash. `blade_used_time` was unchanged (166.49 hr at
+T+0 and T+8min). **The mower never physically mowed.** But the tool
+returned success — plumbing ACK without faucet proof.
+
+### v1.1 behavior (the fix)
+
+`mow_area` now defaults to `verify=True`, which runs a 3-phase
+post-dispatch verification (per the Investigator surface report
+2026-05-15 §5):
+
+| Phase | Window | Success criterion | What it proves |
+|---|---|---|---|
+| 1 | 0-90s | `state=mowing` + `activity=MODE_WORKING` SUSTAINED ≥30s | Mower undocked + entered work mode (not just a flash) |
+| 2 | 90-600s | `sensor.work_area` contains `"area <target_hash>"` | Mower physically arrived at the target area (RTK-GPS zone match) |
+| 3 | 600-1800s | `sensor.blade_used_time` delta ≥ 0.001 hr (~3.6s blade time) | Blades **physically spun** — the irreversible faucet proof |
+
+Phase 3 is THE proof. `blade_used_time` is the only HA signal that
+conclusively proves blades physically engaged. There is **no**
+real-time blade-RPM sensor in the HA surface (Investigator §1). The
+counter is async (SysReport-driven, 5-17 min latency observed), so the
+20-minute Phase 3 window is conservative.
+
+### Trade-off: long-running
+
+`verify=True` is now **long-running**: up to ~30 minutes worst case (on
+a failed Phase 3 timeout). Callers MUST set their MCP timeout
+accordingly — `≥ 1800s` is the recommendation.
+
+### Result values (v1.1)
+
+| `result` | Meaning |
+|---|---|
+| `mow_complete` | Verification succeeded — blades engaged, mower mowed. |
+| `mow_failed_verification` | Verification failed; dock recovery attempted (when `return_to_dock=True`). The `verification` field has the phase that failed + detail. |
+| `mow_dispatched_unverified` | `verify=False` opt-out path — v1.0 HA-ACK semantics. Caller verifies themselves. |
+| `mowing_started` | `verify=False` AND `return_to_dock=False` — v1.0 fast-path snapshot return. |
+
+### Opt-out (`verify=False`)
+
+Callers who plan to handle verification themselves can pass
+`verify=False`. This restores v1.0 fast-path semantics. The
+`protocol_version` in the response stays at `2` so callers can detect
+they're talking to a v1.1 server.
+
+### Edge case: stale-SysReport rollback
+
+`blade_used_time` is async — on MQTT reconnect, a stale cached value
+can briefly arrive (observed: -5.7 min delta, recovered within ~3 min).
+`_verify_mowing` handles this: when `current_value < baseline`, the
+verifier does NOT update its baseline; it keeps polling and lets the
+later (correct) value re-establish the positive delta.
 
 ## Purpose
 

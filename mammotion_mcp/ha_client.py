@@ -257,6 +257,29 @@ class HAClient:
             last_changed=_safe_str((mower).get("last_changed")),
         )
 
+    async def safe_float_state(self, entity_id: str) -> float | None:
+        """Read an entity's ``state`` as a float, or None if unavailable.
+
+        Convenience helper for v1.1 verification — most sensors return their
+        state as a string that has to be coerced. Numeric sensors like
+        ``sensor.luba2_awd_1_blade_used_time`` can also briefly report
+        ``"unknown"`` or ``"unavailable"`` after MQTT drops; this helper
+        returns None in those cases instead of raising.
+
+        Network and HTTP errors propagate unchanged so callers can apply
+        their own retry/abort logic (e.g., ``_verify_mowing`` distinguishes
+        environmental failures from verification failures).
+
+        Args:
+            entity_id: Entity to read (e.g. ``"sensor.luba2_awd_1_blade_used_time"``).
+
+        Returns:
+            Float value of the entity's ``state``, or None if the state was
+            ``unknown`` / ``unavailable`` / missing / non-numeric.
+        """
+        state_obj = await self.get_state(entity_id)
+        return _safe_float(state_obj.get("state"))
+
     async def reload_config_entry(self, entry_id: str) -> dict[str, Any]:
         """Reload a HA config entry via POST.
 

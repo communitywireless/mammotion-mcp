@@ -96,6 +96,56 @@ def resolve(area_name: str, mapping_path: str | None) -> str:
     return switch_entity
 
 
+def resolve_with_hash(
+    area_name: str,
+    mapping_path: str | None = None,
+) -> tuple[str, int]:
+    """Return (ha_switch_entity, hash_int) for the named area.
+
+    Companion to :func:`resolve` — v1.1 verification needs the integer hash
+    in addition to the switch entity. The hash is used to match
+    ``sensor.luba2_awd_1_work_area`` substring ``area <hash>`` during the
+    Phase 2 area-arrival check.
+
+    Args:
+        area_name: Joshua-app-side area name (e.g. "Area 6").
+        mapping_path: Absolute path to area-mapping.json, or None to use the
+                      package-bundled default.
+
+    Returns:
+        Tuple of (switch_entity, hash_int). For example::
+
+            ("switch.luba2_awd_1_area_3439157731089703234", 3439157731089703234)
+
+    Raises:
+        ValueError: if ``area_name`` not found, or the mapping entry is
+                    missing either ``ha_switch_entity`` or ``hash``.
+    """
+    data = _load_mapping(mapping_path)
+    by_app = data.get("by_app_name", {})
+    if area_name not in by_app:
+        valid = ", ".join(sorted(by_app.keys()))
+        raise ValueError(
+            f"Unknown area: {area_name!r}. Valid names: {valid}"
+        )
+    entry = by_app[area_name]
+    switch_entity = entry.get("ha_switch_entity")
+    hash_str = entry.get("hash")
+    if not switch_entity or not hash_str:
+        raise ValueError(
+            f"Mapping entry for {area_name!r} incomplete (missing "
+            f"ha_switch_entity or hash). area-mapping.json is corrupt."
+        )
+    try:
+        hash_int = int(hash_str)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Mapping entry for {area_name!r} has non-integer hash: "
+            f"{hash_str!r}. area-mapping.json is corrupt."
+        ) from exc
+    return switch_entity, hash_int
+
+
 def list_areas(mapping_path: str | None) -> list[dict[str, str]]:
     """Return all areas as a list of dicts.
 
