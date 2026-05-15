@@ -7,12 +7,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python deps first for layer caching
-COPY pyproject.toml ./
+# Install Python deps first for layer caching.
+# pyproject.toml declares readme = "README.md" + hatch builds an editable
+# wheel from the `mammotion_mcp` package — both must be present at install
+# time, so copy them BEFORE `pip install -e .`.
+COPY pyproject.toml README.md ./
+COPY mammotion_mcp ./mammotion_mcp
 RUN pip install --no-cache-dir -e .
 
-# Application source
-COPY mammotion_mcp ./mammotion_mcp
+# Application data (kept as a separate layer so updating area-mapping.json
+# doesn't invalidate the pip-install layer).
 COPY data ./data
 
 # MCP servers run via stdio — no port exposure needed.

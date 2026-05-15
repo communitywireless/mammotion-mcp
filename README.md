@@ -81,10 +81,64 @@ For tools that need behaviors NOT exposed by HA (manual nudge, goto_coord), this
 
 1. Build: `docker compose build` (Dockerfile in this repo)
 2. Deploy to Thor2: `docker compose up -d` from `/opt/mammotion-mcp/`
-3. Register in mycroft-sandbox `.mcp.json`
+3. Register in mycroft-sandbox `.mcp.json` (see stanza below)
 4. Smoke-test read-side tools (`get_mower_status`, `list_areas`, `get_position`) via mycroft-sandbox agent
 5. Joshua eyes-on Tier-1 live `mow_area` test
 6. After 24h clean: promote to mycroft-desktop `.mcp.json`, then CM/Mycroft-container
+
+## How to register in `.mcp.json`
+
+For mycroft-sandbox (Thor2) — the agent owns the MCP server process via `docker exec`:
+
+```json
+{
+  "mcpServers": {
+    "mammotion-mcp": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "mammotion-mcp",
+        "python",
+        "-m",
+        "mammotion_mcp.server"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Pre-requisites on the host:
+- `docker compose up -d` has been run from `/opt/mammotion-mcp/` so the
+  `mammotion-mcp` container is up.
+- `.env` file at `/opt/mammotion-mcp/.env` has at minimum:
+  - `HA_TOKEN=<thor1 ha long-lived token>`
+  - All other vars use the defaults baked into `.env.example`.
+
+For local dev (no container) — point MCP directly at the Python module:
+
+```json
+{
+  "mcpServers": {
+    "mammotion-mcp-dev": {
+      "command": "python",
+      "args": ["-m", "mammotion_mcp.server"],
+      "env": {
+        "HA_TOKEN": "<your long-lived token>",
+        "HA_URL": "http://192.168.1.201:8123",
+        "AREA_MAPPING_PATH": "/c/Users/Joshua Montgomery/projects/mammotion-mcp/data/area-mapping.json",
+        "LOCK_FILE_PATH": "/c/temp/mammotion-mcp.lock"
+      }
+    }
+  }
+}
+```
+
+To enable Tier-4 diagnostic tools (manual_drive, reload_integration,
+start_stop_blades, etc.), set `ENABLE_DIAGNOSTIC_TOOLS=true` in `.env`
+or in the `env` block above. Default is `false` — production registers
+the safe subset only.
 
 ## Doctrine compliance
 
