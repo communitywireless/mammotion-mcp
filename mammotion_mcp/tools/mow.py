@@ -21,6 +21,21 @@ v1.0 returned success after HA-service-call ACK (plumbing); v1.1 returns
 success only after blade engagement is confirmed via ``blade_used_time``
 delta (faucet). See README "What 'success' means" for the W-003 context.
 
+v1.2 (2026-05-15) fixes the dock-fire-during-mowing bug surfaced 09:25 HST
+on the same day. v1.1's verification phase honestly REPORTED the failure
+but didn't PREVENT it — the unconditional dock-fire after verification
+killed the mow even when ``mow_duration_sec=None`` (the default). v1.2
+makes the dock fire ASYMMETRIC on ``mow_duration_sec``:
+
+- ``mow_duration_sec=None`` → tool does NOT fire ``lawn_mower.dock``.
+  Mower auto-completes the area + auto-docks itself. Tool returns
+  ``mow_complete_autonomous`` after Phase 3 verification confirms
+  blades engaged.
+- ``mow_duration_sec=N`` → sleep N then fire dock (explicit recall,
+  unchanged from v1.1).
+
+See README "Dock semantics" for the rationale.
+
 See ``~/projects/mower-recovery-pm/docs/2026-05-14-mower-usage-guide-for-agents.md``.
 """
 
@@ -500,7 +515,29 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
           step 3 with HA-ACK semantics (v1.0-compatible behavior). Use ONLY
           when the caller will do their own verification.
 
-        Composition with ``mow_duration_sec`` (v1.1):
+        Dock semantics (v1.2 W-003 root-cause fix):
+          ``mow_duration_sec`` now controls whether the tool fires an explicit
+          ``lawn_mower.dock`` recall:
+
+          - ``mow_duration_sec=None`` (default): the tool does NOT fire
+            ``lawn_mower.dock``. The mower auto-completes the named area
+            using its own firmware-driven coverage path and auto-docks
+            when finished. The tool returns after verification confirms
+            blades engaged (``mow_complete_autonomous``).
+          - ``mow_duration_sec=N`` (set): the tool sleeps N seconds AFTER
+            verification passes, then fires ``lawn_mower.dock`` (explicit
+            recall). Use this when you want to bound the mow duration
+            regardless of area completion (``mow_complete``).
+
+          This is the W-003 root-cause fix from 2026-05-15 09:25 HST. v1.1's
+          unconditional dock-fire-after-verification killed the mow in
+          MODE_WORKING (HA's mammotion integration translates dock-during-
+          mowing into ``pause_execute_task`` + ``return_to_dock``). v1.2
+          treats ``mow_duration_sec=None`` as "let the mower mow to natural
+          completion" and only fires explicit dock when the user opted in
+          to a bounded duration.
+
+        Composition with ``mow_duration_sec`` (v1.1 verify-path behavior):
           When ``verify=True`` AND ``mow_duration_sec`` is set, verification
           runs first; if Phase 3 succeeds BEFORE mow_duration_sec elapses,
           the tool continues mowing for the rest of the duration. If verification
@@ -514,14 +551,19 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
             blade_height_mm: Cutting height in mm. Must be 15-100, step 5.
                              Default 55 (Joshua's operational value; do NOT
                              use 25 — triggers Error 1202).
-            mow_duration_sec: If set, mow for this many seconds then auto-dock.
-                              If None and return_to_dock=True, return the
-                              snapshot after verification (or after state=mowing
-                              if verify=False); if None and return_to_dock=False,
-                              return immediately after verification.
-            return_to_dock: If True, recall to dock after mow_duration_sec
-                            elapses AND fire post-dock cancel_job. Also fires
-                            dock recovery on verification failure.
+            mow_duration_sec: If set, mow for this many seconds AFTER
+                              verification passes, then fire explicit dock
+                              recall (when return_to_dock=True). If None
+                              (default), the mower auto-completes the area
+                              on its own and auto-docks itself; the tool
+                              does NOT fire dock — returning after Phase 3
+                              verification confirms blades engaged.
+            return_to_dock: If True AND mow_duration_sec is set, recall to
+                            dock after the duration elapses AND fire post-dock
+                            cancel_job. Also fires dock recovery on
+                            verification failure. NO EFFECT when
+                            mow_duration_sec is None — auto-completion is
+                            firmware-driven, dock is automatic.
             override_quiet_hours: Bypass quiet-hours gate.
             verify: If True (default), run 3-phase post-dispatch verification.
                     If False, return immediately after start_mow ACK (v1.0
@@ -530,7 +572,10 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
         Returns:
             Dict with:
               result: One of:
-                ``"mow_complete"`` (verify=True succeeded)
+                ``"mow_complete_autonomous"`` (verify=True, mow_duration_sec=None,
+                  verification passed; mower will auto-dock)
+                ``"mow_complete"`` (verify=True, mow_duration_sec set,
+                  explicit recall completed)
                 ``"mow_dispatched_unverified"`` (verify=False)
                 ``"mow_failed_verification"`` (verify=True, phase 1/2/3 fail)
                 ``"mowing_started"`` (verify=False AND return_to_dock=False)
@@ -538,7 +583,8 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
               blade_height_mm: blade height used
               verification: dict from _verify_mowing (only when verify=True)
               mower_status: final status snapshot
-              protocol_version: 2 (v1.1 bumped 1 -> 2)
+              protocol_version: 3 (v1.2 bumped 2 -> 3 for dock-semantic change)
+              note: (autonomous path only) explanatory string
 
         Raises:
             SafetyViolation: quiet hours / blade height / battery preflight
@@ -629,7 +675,7 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                         "area_resolved": switch_entity,
                         "blade_height_mm": blade_height_mm,
                         "mower_status": final_status.to_dict(),
-                        "protocol_version": 2,
+                        "protocol_version": 3,
                     }
 
                 # Dock + post-dock cleanup for verify=False with return_to_dock=True
@@ -652,7 +698,7 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                     "area_resolved": switch_entity,
                     "blade_height_mm": blade_height_mm,
                     "mower_status": final_status.to_dict(),
-                    "protocol_version": 2,
+                    "protocol_version": 3,
                 }
 
             # ---- v1.1 verification path -----------------------------------
@@ -692,18 +738,48 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                     "blade_height_mm": blade_height_mm,
                     "verification": verification,
                     "mower_status": final_status.to_dict(),
-                    "protocol_version": 2,
+                    "protocol_version": 3,
                 }
 
             # Verification succeeded — Phase 3 PASS.
-            # If mow_duration_sec was provided, continue mowing for the
-            # remainder of the requested duration before docking.
-            if mow_duration_sec:
+            #
+            # v1.2 dock semantic: gate the explicit dock-fire on
+            # mow_duration_sec. None = autonomous (mower auto-docks itself
+            # after firmware-driven area completion). Set = explicit recall.
+            if mow_duration_sec is None:
+                # Autonomous completion path — do NOT fire lawn_mower.dock.
+                # The 09:25 HST 2026-05-15 bug fired dock here, which HA's
+                # mammotion integration translated to pause_execute_task in
+                # MODE_WORKING, killing the mow. v1.2 returns success after
+                # verification confirms blades engaged + lets the mower
+                # finish + auto-dock on its own.
                 LOGGER.info(
-                    "Verification passed; continuing mow for remainder of "
-                    "mow_duration_sec=%d", mow_duration_sec,
+                    "Verification passed; mow_duration_sec=None -> "
+                    "autonomous completion (mower auto-docks itself, "
+                    "NOT firing explicit dock per v1.2 W-003 fix)"
                 )
-                await asyncio.sleep(mow_duration_sec)
+                final_status = await ha_client.get_mower_status()
+                return {
+                    "result": "mow_complete_autonomous",
+                    "area_resolved": switch_entity,
+                    "blade_height_mm": blade_height_mm,
+                    "verification": verification,
+                    "mower_status": final_status.to_dict(),
+                    "protocol_version": 3,
+                    "note": (
+                        "Mower will continue mowing + auto-dock when area "
+                        "complete. Did not fire explicit dock — pass "
+                        "mow_duration_sec to recall on a timer."
+                    ),
+                }
+
+            # mow_duration_sec was set — user explicitly bounded the mow with
+            # a recall. Sleep, then fire explicit dock.
+            LOGGER.info(
+                "Verification passed; continuing mow for remainder of "
+                "mow_duration_sec=%d before explicit dock", mow_duration_sec,
+            )
+            await asyncio.sleep(mow_duration_sec)
 
             if not return_to_dock:
                 final_status = await ha_client.get_mower_status()
@@ -713,10 +789,10 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                     "blade_height_mm": blade_height_mm,
                     "verification": verification,
                     "mower_status": final_status.to_dict(),
-                    "protocol_version": 2,
+                    "protocol_version": 3,
                 }
 
-            # Step 4: lawn_mower.dock
+            # Step 4: lawn_mower.dock (explicit recall after bounded duration)
             LOGGER.info("Step 4/5: lawn_mower.dock")
             await ha_client.call_service("lawn_mower", "dock")
 
@@ -741,7 +817,7 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                 "blade_height_mm": blade_height_mm,
                 "verification": verification,
                 "mower_status": final_status.to_dict(),
-                "protocol_version": 2,
+                "protocol_version": 3,
             }
 
     @server.tool()

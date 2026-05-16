@@ -235,7 +235,7 @@ async def test_mow_area_fires_5_step_sequence(daytime_now, gate, mapping_env) ->
     assert result["result"] == "mow_dispatched_unverified"
     assert result["area_resolved"] == "switch.luba2_awd_1_area_3439157731089703234"
     assert result["blade_height_mm"] == 55
-    assert result["protocol_version"] == 2
+    assert result["protocol_version"] == 3
 
 
 @pytest.mark.asyncio
@@ -394,12 +394,14 @@ async def test_dock_and_clear(daytime_now, gate, mapping_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mow_area_verified_happy_path(
+async def test_mow_area_verified_happy_path_autonomous(
     daytime_now, gate, mapping_env
 ) -> None:
-    """Happy path: Phase 1 sustained → Phase 2 area arrival → Phase 3 blade delta.
+    """v1.2 happy path: Phase 1 sustained → Phase 2 area arrival → Phase 3 blade delta.
 
-    Returns ``mow_complete`` with verified=True + structured verification dict.
+    With ``mow_duration_sec=None`` (default), tool returns
+    ``mow_complete_autonomous`` and does NOT fire ``lawn_mower.dock`` — mower
+    auto-completes the area + auto-docks itself per v1.2 W-003 fix.
     """
     server = _FakeServer()
     ha = _VerifyMockHAClient()
@@ -419,21 +421,22 @@ async def test_mow_area_verified_happy_path(
     mow_module.register(server, ha_client=ha, safety=gate)
     result = await server.tools["mow_area"]("Area 6", verify=True)
 
-    assert result["result"] == "mow_complete"
+    assert result["result"] == "mow_complete_autonomous"
     assert result["verification"]["verified"] is True
     assert result["verification"]["phase_reached"] == 3
     assert result["verification"]["blade_delta_hr"] is not None
     assert result["verification"]["blade_delta_hr"] >= 0.001
-    assert result["protocol_version"] == 2
-    # Full 5-step sequence fired (cancel + blades + start_mow + dock + post-dock cancel)
+    assert result["protocol_version"] == 3
+    assert "note" in result
+    # 3-step pre-mow sequence ONLY (cancel + blades + start_mow).
+    # NO dock-fire — that was the v1.1 bug. NO post-dock cancel either.
     sequence = [(d, s) for d, s, _ in ha.calls]
     assert sequence == [
         ("mammotion", "cancel_job"),
         ("mammotion", "start_stop_blades"),
         ("mammotion", "start_mow"),
-        ("lawn_mower", "dock"),
-        ("mammotion", "cancel_job"),
     ]
+    assert ("lawn_mower", "dock") not in sequence
 
 
 @pytest.mark.asyncio
@@ -547,8 +550,11 @@ async def test_mow_area_phase3_stale_sysreport_rollback(
         "Area 6", verify=True, return_to_dock=False
     )
 
-    # Despite the rollback, Phase 3 should ultimately succeed
-    assert result["result"] == "mow_complete"
+    # Despite the rollback, Phase 3 should ultimately succeed.
+    # v1.2: with mow_duration_sec=None (default), success result is
+    # "mow_complete_autonomous" — mower auto-docks itself, no explicit
+    # dock-fire by the tool.
+    assert result["result"] == "mow_complete_autonomous"
     assert result["verification"]["verified"] is True
     assert result["verification"]["phase_reached"] == 3
     assert result["verification"]["blade_delta_hr"] >= 0.001
@@ -570,7 +576,7 @@ async def test_mow_area_verify_false_opt_out(
 
     assert result["result"] == "mow_dispatched_unverified"
     assert "verification" not in result
-    assert result["protocol_version"] == 2
+    assert result["protocol_version"] == 3
 
 
 @pytest.mark.asyncio
@@ -604,3 +610,139 @@ async def test_mow_area_dock_recovery_on_verification_failure(
     # At least 2 cancel_job calls (pre-mow + post-dock recovery)
     cancels = [s for d, s in services_called if (d, s) == ("mammotion", "cancel_job")]
     assert len(cancels) >= 2
+
+
+# =========================================================================
+# v1.2 dock-semantic tests (W-003 root-cause fix)
+#
+# These tests assert the asymmetric dock-fire behavior introduced in v1.2:
+# - mow_duration_sec=None (default) → tool does NOT fire lawn_mower.dock,
+#   mower auto-docks itself.
+# - mow_duration_sec=N (set) → tool fires explicit dock after duration.
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mow_area_no_duration_no_explicit_dock(
+    daytime_now, gate, mapping_env
+) -> None:
+    """v1.2 W-003 fix: mow_duration_sec=None + return_to_dock=True (defaults)
+    must NEVER fire lawn_mower.dock.
+
+    This is the load-bearing assertion. v1.1's unconditional dock-fire after
+    verification killed the 2026-05-15 09:25 HST Area 1 mow — HA's mammotion
+    integration translates dock-during-MODE_WORKING into pause_execute_task +
+    return_to_dock. v1.2 returns autonomous after verification confirms
+    blades engaged and lets the mower complete + auto-dock itself.
+    """
+    server = _FakeServer()
+    ha = _VerifyMockHAClient()
+
+    # Set up a passing 3-phase verification trace
+    target_hash = 3439157731089703234
+    ha.state_sequence["lawn_mower"] = ["mowing"]
+    ha.state_sequence["activity_mode"] = ["MODE_WORKING"]
+    ha.state_sequence["work_area"] = [f"area {target_hash}"]
+    ha.blade_used_sequence = [166.0, 166.1]
+
+    mow_module.register(server, ha_client=ha, safety=gate)
+    # Defaults: mow_duration_sec=None, return_to_dock=True, verify=True
+    result = await server.tools["mow_area"]("Area 6")
+
+    # Result indicates autonomous completion path
+    assert result["result"] == "mow_complete_autonomous"
+    assert result["protocol_version"] == 3
+    assert result["verification"]["verified"] is True
+    assert "note" in result  # autonomous path carries the explanatory note
+
+    # THE load-bearing assertion: lawn_mower.dock was NEVER called by the tool.
+    services_called = [(d, s) for d, s, _ in ha.calls]
+    assert ("lawn_mower", "dock") not in services_called, (
+        f"v1.2 regression: lawn_mower.dock fired with mow_duration_sec=None. "
+        f"Sequence: {services_called}"
+    )
+
+    # Only pre-mow steps fired (cancel + blades + start_mow). No post-dock cancel.
+    assert services_called == [
+        ("mammotion", "cancel_job"),
+        ("mammotion", "start_stop_blades"),
+        ("mammotion", "start_mow"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mow_area_with_duration_fires_dock(
+    daytime_now, gate, mapping_env
+) -> None:
+    """v1.2: mow_duration_sec=N preserves the v1.1 explicit-recall behavior.
+
+    When the user explicitly bounds the mow with a duration, the tool sleeps
+    that duration AFTER verification passes, then fires lawn_mower.dock,
+    polls charging, and fires post-dock cancel_job. Full 5-step sequence.
+    """
+    server = _FakeServer()
+    ha = _VerifyMockHAClient()
+
+    # Set up a passing 3-phase verification trace
+    target_hash = 3439157731089703234
+    ha.state_sequence["lawn_mower"] = ["mowing"]
+    ha.state_sequence["activity_mode"] = ["MODE_WORKING"]
+    ha.state_sequence["work_area"] = [f"area {target_hash}"]
+    ha.blade_used_sequence = [166.0, 166.1]
+
+    mow_module.register(server, ha_client=ha, safety=gate)
+    result = await server.tools["mow_area"](
+        "Area 6", mow_duration_sec=60, verify=True, return_to_dock=True
+    )
+
+    assert result["result"] == "mow_complete"
+    assert result["protocol_version"] == 3
+    assert result["verification"]["verified"] is True
+
+    # Full 5-step canonical sequence including the explicit recall dock-fire.
+    sequence = [(d, s) for d, s, _ in ha.calls]
+    assert sequence == [
+        ("mammotion", "cancel_job"),         # pre-mow
+        ("mammotion", "start_stop_blades"),  # pre-mow
+        ("mammotion", "start_mow"),          # pre-mow
+        ("lawn_mower", "dock"),              # explicit recall after duration
+        ("mammotion", "cancel_job"),         # post-dock cleanup
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mow_area_no_duration_return_to_dock_false(
+    daytime_now, gate, mapping_env
+) -> None:
+    """v1.2: mow_duration_sec=None + return_to_dock=False returns autonomously
+    after verification, with NO dock-fire (just like the default-return_to_dock
+    path; return_to_dock has no effect when duration is None).
+    """
+    server = _FakeServer()
+    ha = _VerifyMockHAClient()
+
+    # Set up a passing 3-phase verification trace
+    target_hash = 3439157731089703234
+    ha.state_sequence["lawn_mower"] = ["mowing"]
+    ha.state_sequence["activity_mode"] = ["MODE_WORKING"]
+    ha.state_sequence["work_area"] = [f"area {target_hash}"]
+    ha.blade_used_sequence = [166.0, 166.1]
+
+    mow_module.register(server, ha_client=ha, safety=gate)
+    result = await server.tools["mow_area"](
+        "Area 6", verify=True, return_to_dock=False
+    )
+
+    # Same autonomous-completion result regardless of return_to_dock.
+    assert result["result"] == "mow_complete_autonomous"
+    assert result["protocol_version"] == 3
+    assert result["verification"]["verified"] is True
+
+    # No dock-fire — verified by absence in the service-call list.
+    services_called = [(d, s) for d, s, _ in ha.calls]
+    assert ("lawn_mower", "dock") not in services_called
+    assert services_called == [
+        ("mammotion", "cancel_job"),
+        ("mammotion", "start_stop_blades"),
+        ("mammotion", "start_mow"),
+    ]

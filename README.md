@@ -2,9 +2,51 @@
 
 MCP server exposing canonical Mammotion Luba2-AWD mower control to Guard Well Farm agents.
 
-**Status:** v1.1 (2026-05-15) — in-tool verification phase added (W-003 fix).
+**Status:** v1.2 (2026-05-15) — dock-semantic fix (W-003 root cause).
 **Deployment tier (initial):** mycroft-sandbox on Thor2 (per `rules/sandbox-first.md`).
 **Owner:** mower-recovery-pm (transient) → folds into mycroft-desktop on close.
+
+## Dock semantics (v1.2 W-003 root-cause fix)
+
+`mow_area` treats `mow_duration_sec` ASYMMETRICALLY with respect to the
+explicit `lawn_mower.dock` recall:
+
+| `mow_duration_sec` | `return_to_dock` | Behavior |
+|---|---|---|
+| `None` (default) | `True` (default) | Tool does NOT fire `lawn_mower.dock`. Mower auto-completes the area + auto-docks itself. Returns `mow_complete_autonomous` after Phase 3 verification confirms blades engaged. |
+| `None` | `False` | Same — autonomous completion. `return_to_dock` has NO effect when `mow_duration_sec` is None (the mower's firmware handles the dock-return itself). |
+| `N` (set) | `True` | Tool sleeps N seconds AFTER verification passes, then fires `lawn_mower.dock` (explicit recall). Returns `mow_complete`. |
+| `N` (set) | `False` | Tool sleeps N seconds AFTER verification passes, then returns WITHOUT firing dock. Returns `mow_complete`. |
+
+### Why asymmetric (the 2026-05-15 09:25 HST root cause)
+
+v1.1 fired `lawn_mower.dock` unconditionally after Phase 3 verification
+passed, regardless of whether the caller bounded the mow with
+`mow_duration_sec`. On 2026-05-15 09:25 HST a `mow_area("Area 1")`
+dispatch with the default `mow_duration_sec=None` reached Phase 3 PASS,
+then fired `lawn_mower.dock` while the mower was still in `MODE_WORKING`.
+HA's mammotion integration translates `lawn_mower.dock` during
+`MODE_WORKING` into `pause_execute_task` + `return_to_dock`, which killed
+the mow. The mower had driven 1.3 meters of a ~120-meter transit to Area
+1 and never blade-engaged in the target area.
+
+v1.1's three-phase verification HONESTLY REPORTED what happened — but
+didn't PREVENT it. The bug was that the tool fired the killing dock
+itself.
+
+v1.2's fix: `mow_duration_sec=None` means "let the mower mow to natural
+completion." The mower's firmware auto-docks when the area is finished.
+The tool does NOT issue an explicit dock — it returns success after Phase
+3 verification confirms blades engaged and leaves the mower to complete
+the area autonomously. `mow_duration_sec=N` is the explicit-recall path
+for callers who want to bound the mow regardless of area completion.
+
+### Doctrine: prefer autonomous completion
+
+Default callers should leave `mow_duration_sec=None` and let the mower
+auto-complete + auto-dock. Use `mow_duration_sec` only when you
+specifically need to bound the mow with a wall-clock timer (e.g., quiet
+hours approaching, battery preservation budget, demo scenario).
 
 ## What `success` means (v1.1 W-003 fix)
 
@@ -48,11 +90,12 @@ counter is async (SysReport-driven, 5-17 min latency observed), so the
 a failed Phase 3 timeout). Callers MUST set their MCP timeout
 accordingly — `≥ 1800s` is the recommendation.
 
-### Result values (v1.1)
+### Result values (v1.2)
 
 | `result` | Meaning |
 |---|---|
-| `mow_complete` | Verification succeeded — blades engaged, mower mowed. |
+| `mow_complete_autonomous` | v1.2 default success — verification passed, `mow_duration_sec=None`, tool did NOT fire explicit dock. Mower will continue mowing and auto-dock when the area is complete. |
+| `mow_complete` | Explicit-recall success — verification passed AND `mow_duration_sec` was set, tool slept the duration and fired `lawn_mower.dock`. |
 | `mow_failed_verification` | Verification failed; dock recovery attempted (when `return_to_dock=True`). The `verification` field has the phase that failed + detail. |
 | `mow_dispatched_unverified` | `verify=False` opt-out path — v1.0 HA-ACK semantics. Caller verifies themselves. |
 | `mowing_started` | `verify=False` AND `return_to_dock=False` — v1.0 fast-path snapshot return. |
@@ -61,8 +104,9 @@ accordingly — `≥ 1800s` is the recommendation.
 
 Callers who plan to handle verification themselves can pass
 `verify=False`. This restores v1.0 fast-path semantics. The
-`protocol_version` in the response stays at `2` so callers can detect
-they're talking to a v1.1 server.
+`protocol_version` in the response is now `3` (v1.2 bump from 2 — the
+dock-semantic change is a wire-format-compatible behavior change but
+gets a version bump so callers can detect v1.2 explicitly).
 
 ### Edge case: stale-SysReport rollback
 
