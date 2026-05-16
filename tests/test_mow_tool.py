@@ -216,12 +216,19 @@ def nighttime_now():
 
 @pytest.mark.asyncio
 async def test_mow_area_fires_5_step_sequence(daytime_now, gate, mapping_env) -> None:
-    """Verify the 5-step canonical order: cancel → blades → start_mow → dock → cancel."""
+    """Verify the 5-step canonical order: cancel → blades → start_mow → dock → cancel.
+
+    Uses mow_duration_sec=60 to exercise the bounded-duration path (verify=False +
+    explicit recall). Without a duration, v1.2 returns the autonomous result without
+    firing dock (mow_dispatched_unverified_autonomous).
+    """
     server = _FakeServer()
     ha = _MockHAClient()
     mow_module.register(server, ha_client=ha, safety=gate)
 
-    result = await server.tools["mow_area"]("Area 6", blade_height_mm=55, verify=False)
+    result = await server.tools["mow_area"](
+        "Area 6", blade_height_mm=55, verify=False, mow_duration_sec=60
+    )
 
     sequence = [(d, s) for d, s, _data in ha.calls]
     assert sequence == [
@@ -290,13 +297,18 @@ async def test_mow_area_blocked_during_quiet_hours(
 async def test_mow_area_override_quiet_hours(
     nighttime_now, gate, mapping_env
 ) -> None:
-    """override_quiet_hours=True allows mow at night."""
+    """override_quiet_hours=True allows mow at night.
+
+    Uses mow_duration_sec=60 to exercise the bounded-duration path so the
+    test still confirms the full 5-step sequence fires (v1.2 no-duration path
+    returns early at 3 steps without dock).
+    """
     server = _FakeServer()
     ha = _MockHAClient()
     mow_module.register(server, ha_client=ha, safety=gate)
 
     await server.tools["mow_area"](
-        "Area 6", override_quiet_hours=True, verify=False
+        "Area 6", override_quiet_hours=True, verify=False, mow_duration_sec=60
     )
     assert len(ha.calls) == 5
 
@@ -564,9 +576,12 @@ async def test_mow_area_phase3_stale_sysreport_rollback(
 async def test_mow_area_verify_false_opt_out(
     daytime_now, gate, mapping_env
 ) -> None:
-    """verify=False returns ``mow_dispatched_unverified`` (v1.0 semantics).
+    """verify=False + no duration returns ``mow_dispatched_unverified_autonomous`` (v1.2).
 
-    Returns immediately after start_mow ACK + dock cycle (no verification phase).
+    Returns immediately after start_mow ACK without dock (no verification phase,
+    no explicit recall). Mower auto-completes + auto-docks on its own.
+    Updated from v1.0 ``mow_dispatched_unverified`` to v1.2
+    ``mow_dispatched_unverified_autonomous`` to reflect the W-003 follow-up fix.
     """
     server = _FakeServer()
     ha = _MockHAClient()
@@ -574,9 +589,10 @@ async def test_mow_area_verify_false_opt_out(
 
     result = await server.tools["mow_area"]("Area 6", verify=False)
 
-    assert result["result"] == "mow_dispatched_unverified"
+    assert result["result"] == "mow_dispatched_unverified_autonomous"
     assert "verification" not in result
     assert result["protocol_version"] == 3
+    assert "note" in result
 
 
 @pytest.mark.asyncio
@@ -746,3 +762,94 @@ async def test_mow_area_no_duration_return_to_dock_false(
         ("mammotion", "start_stop_blades"),
         ("mammotion", "start_mow"),
     ]
+
+
+# =========================================================================
+# v1.2 verify=False path dock-semantic tests (W-003 follow-up fix)
+#
+# The v1.1 fix gated dock-fire in the verify=True (default) path.
+# The verify=False opt-out path had the same unconditional dock-fire bug.
+# These tests assert the same asymmetric semantic is now applied there too:
+# - mow_duration_sec=None + return_to_dock=True → NO dock (autonomous)
+# - mow_duration_sec=N   + return_to_dock=True → dock after sleep (bounded)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mow_area_verify_false_no_duration_no_dock(
+    daytime_now, gate, mapping_env
+) -> None:
+    """v1.2 follow-up fix: verify=False + mow_duration_sec=None + return_to_dock=True
+    must NOT fire lawn_mower.dock.
+
+    The verify=False opt-out path had the same unconditional dock-fire bug as v1.1's
+    verify=True path. When mow_duration_sec is None the mower should auto-complete and
+    auto-dock itself; an explicit dock call would abort the job prematurely via
+    pause_execute_task + return_to_dock in HA's mammotion integration.
+    """
+    server = _FakeServer()
+    ha = _MockHAClient()
+    mow_module.register(server, ha_client=ha, safety=gate)
+
+    result = await server.tools["mow_area"](
+        "Area 6",
+        verify=False,
+        mow_duration_sec=None,
+        return_to_dock=True,
+    )
+
+    assert result["result"] == "mow_dispatched_unverified_autonomous", (
+        "verify=False + no duration: expected mow_dispatched_unverified_autonomous, "
+        f"got {result['result']!r}"
+    )
+    assert result["protocol_version"] == 3
+    assert "note" in result
+
+    services_called = [(d, s) for d, s, _ in ha.calls]
+    assert ("lawn_mower", "dock") not in services_called, (
+        "v1.2 regression: verify=False + mow_duration_sec=None fired lawn_mower.dock "
+        "— same early-abort bug as v1.1 verify=True path"
+    )
+    # Exactly 3 steps — no dock, no post-dock cancel
+    assert services_called == [
+        ("mammotion", "cancel_job"),
+        ("mammotion", "start_stop_blades"),
+        ("mammotion", "start_mow"),
+    ], f"unexpected call sequence: {services_called}"
+
+
+@pytest.mark.asyncio
+async def test_mow_area_verify_false_with_duration_fires_dock(
+    daytime_now, gate, mapping_env
+) -> None:
+    """verify=False + mow_duration_sec=60 + return_to_dock=True → dock after sleep.
+
+    The bounded-duration path is preserved: user explicitly requested a recall after
+    60 seconds, so the tool sleeps then fires the full dock + post-dock cancel sequence.
+    """
+    server = _FakeServer()
+    ha = _MockHAClient()
+    mow_module.register(server, ha_client=ha, safety=gate)
+
+    result = await server.tools["mow_area"](
+        "Area 6",
+        verify=False,
+        mow_duration_sec=60,
+        return_to_dock=True,
+    )
+
+    assert result["result"] == "mow_dispatched_unverified"
+    assert result["protocol_version"] == 3
+
+    services_called = [(d, s) for d, s, _ in ha.calls]
+    assert ("lawn_mower", "dock") in services_called, (
+        "verify=False + mow_duration_sec=60: expected lawn_mower.dock to fire after sleep"
+    )
+    # Full 5-step sequence preserved
+    assert services_called == [
+        ("mammotion", "cancel_job"),
+        ("mammotion", "start_stop_blades"),
+        ("mammotion", "start_mow"),
+        ("lawn_mower", "dock"),
+        ("mammotion", "cancel_job"),
+    ], f"unexpected sequence: {services_called}"

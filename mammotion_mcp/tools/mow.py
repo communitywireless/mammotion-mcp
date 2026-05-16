@@ -678,7 +678,28 @@ def register(server: FastMCP, *, ha_client: HAClient, safety: SafetyGate) -> Non
                         "protocol_version": 3,
                     }
 
+                if mow_duration_sec is None:
+                    # Autonomous completion path — do NOT fire lawn_mower.dock.
+                    # Same gating as verify=True branch (v1.2 W-003 root-cause fix).
+                    # Mower will auto-complete + auto-dock on its own; explicit dock
+                    # here would translate to pause_execute_task + return_to_dock in
+                    # the HA mammotion integration, aborting the job prematurely.
+                    final_status = await ha_client.get_mower_status()
+                    return {
+                        "result": "mow_dispatched_unverified_autonomous",
+                        "area_resolved": switch_entity,
+                        "blade_height_mm": blade_height_mm,
+                        "mower_status": final_status.to_dict(),
+                        "protocol_version": 3,
+                        "note": (
+                            "verify=False + no duration: returned after start_mow ACK "
+                            "without explicit dock. Mower will auto-complete + auto-dock "
+                            "on its own."
+                        ),
+                    }
+
                 # Dock + post-dock cleanup for verify=False with return_to_dock=True
+                # and an explicit mow_duration_sec. User bounded the mow with a recall.
                 LOGGER.info("Step 4/5: lawn_mower.dock")
                 await ha_client.call_service("lawn_mower", "dock")
                 charging_reached = await _poll_charging(
